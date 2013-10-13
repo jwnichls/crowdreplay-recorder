@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<classpath>
+	<classpathentry kind="src" path="src"/>
+	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER/org.eclipse.jdt.internal.debug.ui.launcher.StandardVMType/JavaSE-1.6"/>
+	<classpathentry kind="lib" path="/recorder-servlet/WebContent/WEB-INF/lib/mysql-connector-java-5.1.20-bin.jar"/>
+	<classpathentry kind="lib" path="/tweetscrape/WebContent/WEB-INF/lib/twitter4j-async-3.0.3.jar"/>
+	<classpathentry kind="lib" path="/tweetscrape/WebContent/WEB-INF/lib/twitter4j-core-3.0.3.jar"/>
+	<classpathentry kind="lib" path="/tweetscrape/WebContent/WEB-INF/lib/twitter4j-examples-3.0.3.jar"/>
+	<classpathentry kind="lib" path="/tweetscrape/WebContent/WEB-INF/lib/twitter4j-media-support-3.0.3.jar"/>
+	<classpathentry kind="lib" path="/tweetscrape/WebContent/WEB-INF/lib/twitter4j-stream-3.0.3.jar"/>
+	<classpathentry kind="lib" path="commons-daemon-1.0.15.jar"/>
+	<classpathentry kind="output" path="bin"/>
+</classpath>
