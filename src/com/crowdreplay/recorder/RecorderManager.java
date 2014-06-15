@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -53,7 +54,7 @@ public class RecorderManager implements Runnable
 		
 		try
 		{
-			_dbConnection = DriverManager.getConnection(_dbName, _dbUser, _dbPassword);
+			_dbConnection = createDBConnection();
 			_queryRecordersStmt = _dbConnection.prepareStatement("select * from recorders;");
 		}
 		catch(Exception e)
@@ -103,14 +104,14 @@ public class RecorderManager implements Runnable
 
 					if (r == null)
 					{
-						r = new Recorder(_dbConnection, id.intValue(), _twitterConsumerKey, _twitterConsumerSecret);
+						r = createRecorder(id.intValue(), _twitterConsumerKey, _twitterConsumerSecret);
 					}
 
-					if (status.equals(STARTING_STATUS) || status.equals(RUNNING_STATUS))
+					if (!r.isRunning() && (status.equals(STARTING_STATUS) || status.equals(RUNNING_STATUS)))
 					{
 						r.start();
 					}
-					else if (status.equals(STOPPING_STATUS) || status.equals(STOPPED_STATUS))
+					else if (r.isRunning() && (status.equals(STOPPING_STATUS) || status.equals(STOPPED_STATUS)))
 					{
 						r.stop();
 					}
@@ -155,5 +156,16 @@ public class RecorderManager implements Runnable
 	public void stop()
 	{
 		_running = false;
+	}
+	
+	protected Recorder createRecorder(int id, String consumerKey, String consumerSecret) throws SQLException
+	{
+		Connection recorderDBConnection = createDBConnection();
+		return new Recorder(recorderDBConnection, id, consumerKey, consumerSecret);
+	}
+	
+	protected Connection createDBConnection() throws SQLException
+	{
+		return DriverManager.getConnection(_dbName, _dbUser, _dbPassword);
 	}
 }
