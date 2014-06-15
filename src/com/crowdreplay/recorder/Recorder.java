@@ -51,6 +51,8 @@ public class Recorder implements StatusListener {
 	protected PreparedStatement _volumeUpdateStmt;
 	protected PreparedStatement	_updateRunningStatusStmt;
 	protected PreparedStatement _createNewTableStmt;
+	protected PreparedStatement _lockTableStmt;
+	protected PreparedStatement _unlockTableStmt;
 	
 	protected int				_recorderId;
 	
@@ -89,12 +91,13 @@ public class Recorder implements StatusListener {
 		try
 		{
 			_getRecorderInfoStmt = _dbConnection.prepareStatement("select category, query, oauth_access_token, oauth_access_secret from recorders where id=?;");
-			_limitInsertStmt = _dbConnection.prepareStatement("insert into rate_limits (skipcount, created_at, tweet_category_id) values ( ?, ?, ? );");
+			_limitInsertStmt = _dbConnection.prepareStatement("insert into rate_limits (skipcount, created_at, updated_at, tweet_category_id) values ( ?, ?, ?, ? );");
 			_rateLimitCountAtTimeStmt = _dbConnection.prepareStatement("select sum(rate_limits.skipcount) as sum_id from rate_limits where (created_at >= ? AND created_at < ?) AND tweet_category_id = ?;");
 			_volumeInsertStmt = _dbConnection.prepareStatement("insert into tweet_volumes (time, count, tweet_category_id) values ( ?, ?, ? );");
 			_volumeUpdateStmt = _dbConnection.prepareStatement("update tweet_volumes set count=? where time=? and tweet_category_id=?;");
 			_updateRunningStatusStmt = _dbConnection.prepareStatement("update recorders set status=?, running=? where id=?;");
-			
+			_unlockTableStmt = _dbConnection.prepareStatement("unlock tables;");
+
 			_getRecorderInfoStmt.setInt(1, recorderId);
 			ResultSet rsRecorderInfo = _getRecorderInfoStmt.executeQuery();
 			if (rsRecorderInfo.next())
@@ -180,6 +183,7 @@ public class Recorder implements StatusListener {
 			_tweetInsertStmt = _dbConnection.prepareStatement("insert into " + _tableName + " (id, text, created_at, updated_at, screenname, user_id, lang, json, tweet_category_id) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? );");
 			_tweetCountAtTimeStmt = _dbConnection.prepareStatement("select count(*) from " + _tableName + " WHERE (created_at >= ? AND created_at < ? AND tweet_category_id = ?)");
 			_createNewTableStmt = _dbConnection.prepareStatement("create table " + _tableName + " like tweets;");
+			_lockTableStmt = _dbConnection.prepareStatement("lock tables " + _tableName + " write;");
 		}
 		catch(Exception e)
 		{
@@ -268,6 +272,7 @@ public class Recorder implements StatusListener {
 
 		try
 		{
+			// long start = System.currentTimeMillis();
 			// countTweet(tweet);
 			
 			// System.out.println(tweet.getId() + " : " + _category + " : " + tweet.getCreatedAt().toGMTString() + " : " + tweet.getUser().getScreenName());
@@ -275,16 +280,25 @@ public class Recorder implements StatusListener {
 			long tweetId = tweet.getId();
 
 			// parse the created at time				
-			Timestamp ts = new Timestamp(tweet.getCreatedAt().getTime() + tweet.getCreatedAt().getTimezoneOffset()*60*1000);
+			java.sql.Timestamp ts = new java.sql.Timestamp(tweet.getCreatedAt().getTime());
 
 			// calculate the volumes for tweets in the last recorded minute
-			if (_lastTimestamp != null &&
-				((ts.getMinutes() != _lastTimestamp.getMinutes()) ||
-				 (ts.getTime() - _lastTimestamp.getTime()) > 60000))
+			if (_lastTimestamp != null)
 			{
-				calculateVolumeForTime(_lastTimestamp);
+				if (_lastTimestamp.getTime() < ts.getTime())
+				{
+					if ((ts.getTime() / 60000) > (_lastTimestamp.getTime() / 60000))
+					{
+						calculateVolumeForTime(_lastTimestamp);
+					}
+					_lastTimestamp = ts;
+				}
 			}
-			_lastTimestamp = ts;
+			else
+			{
+				_lastTimestamp = ts;
+			}
+			
 			
 			_tweetInsertStmt.setLong(1, tweetId); // id
 			_tweetInsertStmt.setString(2, tweet.getText()); // text
@@ -296,6 +310,17 @@ public class Recorder implements StatusListener {
 			_tweetInsertStmt.setString(8, "");
 			_tweetInsertStmt.setInt(9, _categoryId);
 			_tweetInsertStmt.executeUpdate();
+			
+			//System.err.println("Tweet insert took: " + (System.currentTimeMillis() - start));
+		}
+		catch(com.mysql.jdbc.exceptions.jdbc4.MySQLIntegrityConstraintViolationException ce)
+		{
+			if (ce.getMessage().indexOf("Duplicate entry") < 0)
+			{
+				// not a duplicate entry exception
+				System.err.println("Error inserting a tweet");
+				ce.printStackTrace();
+			}
 		}
 		catch(Exception e)
 		{
@@ -353,8 +378,12 @@ public class Recorder implements StatusListener {
 			startTime.setNanos(0);
 			
 			// check to see if start timestamp is in the hashtable
+			
 			if (!_timestampCount.containsKey(startTime))
 			{
+				// unlock tables
+				_unlockTableStmt.execute();
+
 				// check to see if we're at capacity
 				if (_timestampQueue.size() >= TIMESTAMP_BUFFER_SIZE)
 				{
@@ -371,6 +400,8 @@ public class Recorder implements StatusListener {
 						_volumeUpdateStmt.setTimestamp(2, finalTimestamp);
 						_volumeUpdateStmt.setInt(3, _categoryId);
 						_volumeUpdateStmt.executeUpdate();
+						
+						System.out.println("Volume Updated: " + finalTimestamp.toGMTString() + " " + newLastCount);
 					}
 				}
 								
@@ -386,6 +417,9 @@ public class Recorder implements StatusListener {
 				_volumeInsertStmt.executeUpdate();
 				
 				System.out.println("Volume Calculated and Stored: " + startTime.toGMTString() + " " + count);	
+				
+				// relock the tweets table
+				_lockTableStmt.execute();
 			}			
 		}
 		catch(Exception e)
@@ -427,10 +461,20 @@ public class Recorder implements StatusListener {
 	{
 		try
 		{
+			// unlock tables
+			_unlockTableStmt.execute();
+			
+			Timestamp now = getNowUTCTimestamp();
 			_limitInsertStmt.setInt(1, statusesLost);
-			_limitInsertStmt.setTimestamp(2, getNowUTCTimestamp());
+			_limitInsertStmt.setTimestamp(2, now);
+			_limitInsertStmt.setTimestamp(3, now);
 			_limitInsertStmt.setInt(3, _categoryId);
 			_limitInsertStmt.executeUpdate();
+			
+			System.out.println("Rate limited received and stored: " + statusesLost);
+			
+			// relock tweets table
+			_lockTableStmt.execute();
 		}
 		catch(SQLException e)
 		{
@@ -501,7 +545,7 @@ public class Recorder implements StatusListener {
 			{
 				System.out.println("Starting recorder with id " + _recorderId);
 				System.out.println("Category: " + _category + "  Query: " + _query);
-				
+								
 				// start twitter recording
 				ConfigurationBuilder cb = new ConfigurationBuilder();
 				cb.setDebugEnabled(true)
@@ -522,6 +566,9 @@ public class Recorder implements StatusListener {
 			_updateRunningStatusStmt.setBoolean(2, true);
 			_updateRunningStatusStmt.setInt(3, _recorderId);
 			_updateRunningStatusStmt.executeUpdate();
+			
+			// lock the tweets table as we start recording
+			_lockTableStmt.execute();
 		}
 		catch(Exception e)
 		{
@@ -545,6 +592,9 @@ public class Recorder implements StatusListener {
 				
 				System.out.println("Recorder stopped " + _recorderId);
 			}
+			
+			// unlock tables
+			_unlockTableStmt.execute();
 			
 		    // update running status in the database
 			_updateRunningStatusStmt.setString(1, RecorderManager.STOPPED_STATUS);
@@ -572,6 +622,8 @@ public class Recorder implements StatusListener {
 			_volumeUpdateStmt.close();
 			_updateRunningStatusStmt.close();
 			_createNewTableStmt.close();
+			
+			_dbConnection.close();
 		}
 		catch(Exception e)
 		{
