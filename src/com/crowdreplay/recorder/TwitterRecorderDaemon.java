@@ -37,7 +37,7 @@ public class TwitterRecorderDaemon implements Daemon {
 	
 	public TwitterRecorderDaemon(String dbName, String dbUser, String dbPassword, String consumerKey, String consumerSecret)
 	{
-		_dbName = "jdbc:mysql://127.0.0.1/" + dbName;
+		_dbName = "jdbc:mysql://127.0.0.1/" + dbName + "?rewriteBatchedStatements=true&useTimezone=true&serverTimezone=PST";
 		_dbUser = dbUser;
 		_dbPassword = dbPassword;
 		_consumerKey = consumerKey;

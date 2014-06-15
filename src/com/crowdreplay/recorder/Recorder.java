@@ -9,6 +9,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -45,8 +46,6 @@ public class Recorder implements StatusListener {
 	protected PreparedStatement _getRecorderInfoStmt;
 	protected PreparedStatement _tweetInsertStmt;
 	protected PreparedStatement _limitInsertStmt;
-	protected PreparedStatement _tweetCountAtTimeStmt;
-	protected PreparedStatement _rateLimitCountAtTimeStmt;
 	protected PreparedStatement _volumeInsertStmt;
 	protected PreparedStatement _volumeUpdateStmt;
 	protected PreparedStatement	_updateRunningStatusStmt;
@@ -68,10 +67,12 @@ public class Recorder implements StatusListener {
 	protected int[]				_secondsCount;
 	
 	protected java.sql.Timestamp _lastTimestamp;
-	protected HashMap<java.sql.Timestamp, Integer> _timestampCount;
-	protected LinkedList<java.sql.Timestamp> _timestampQueue;
+	protected HashMap<Long, Integer> _timestampCount;
+	protected LinkedList<Long> _timestampQueue;
 	
 	protected TwitterStream 	_twitterStream;
+	
+	protected Calendar			_utcCal;
 
 	
 	//*******************************************************************
@@ -84,15 +85,16 @@ public class Recorder implements StatusListener {
 		_consumerKey = consumerKey;
 		_consumerSecret = consumerSecret;
 			
-		_timestampCount = new HashMap<java.sql.Timestamp, Integer>(TIMESTAMP_BUFFER_SIZE);
-		_timestampQueue = new LinkedList<java.sql.Timestamp>();
+		_timestampCount = new HashMap<Long, Integer>(TIMESTAMP_BUFFER_SIZE);
+		_timestampQueue = new LinkedList<Long>();
+		
+		_utcCal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
 				
 		// create some prepared statements
 		try
 		{
 			_getRecorderInfoStmt = _dbConnection.prepareStatement("select category, query, oauth_access_token, oauth_access_secret from recorders where id=?;");
 			_limitInsertStmt = _dbConnection.prepareStatement("insert into rate_limits (skipcount, created_at, updated_at, tweet_category_id) values ( ?, ?, ?, ? );");
-			_rateLimitCountAtTimeStmt = _dbConnection.prepareStatement("select sum(rate_limits.skipcount) as sum_id from rate_limits where (created_at >= ? AND created_at < ?) AND tweet_category_id = ?;");
 			_volumeInsertStmt = _dbConnection.prepareStatement("insert into tweet_volumes (time, count, tweet_category_id) values ( ?, ?, ? );");
 			_volumeUpdateStmt = _dbConnection.prepareStatement("update tweet_volumes set count=? where time=? and tweet_category_id=?;");
 			_updateRunningStatusStmt = _dbConnection.prepareStatement("update recorders set status=?, running=? where id=?;");
@@ -181,7 +183,6 @@ public class Recorder implements StatusListener {
 		try
 		{
 			_tweetInsertStmt = _dbConnection.prepareStatement("insert into " + _tableName + " (id, text, created_at, updated_at, screenname, user_id, lang, json, tweet_category_id) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? );");
-			_tweetCountAtTimeStmt = _dbConnection.prepareStatement("select count(*) from " + _tableName + " WHERE (created_at >= ? AND created_at < ? AND tweet_category_id = ?)");
 			_createNewTableStmt = _dbConnection.prepareStatement("create table " + _tableName + " like tweets;");
 			_lockTableStmt = _dbConnection.prepareStatement("lock tables " + _tableName + " write;");
 		}
@@ -215,8 +216,8 @@ public class Recorder implements StatusListener {
 				// insert the new category into the database
 				PreparedStatement categoryInsert = _dbConnection.prepareStatement("insert into tweet_categories (category, created_at, updated_at) values ( ?, ?, ? );", Statement.RETURN_GENERATED_KEYS);
 				categoryInsert.setString(1, category);
-				categoryInsert.setTimestamp(2, getNowTimestamp());
-				categoryInsert.setTimestamp(3, getNowTimestamp());
+				categoryInsert.setTimestamp(2, getNowTimestamp(), _utcCal);
+				categoryInsert.setTimestamp(3, getNowTimestamp(), _utcCal);
 				categoryInsert.executeUpdate();
 				
 				// get the id of the newly inserted category
@@ -281,7 +282,21 @@ public class Recorder implements StatusListener {
 
 			// parse the created at time				
 			java.sql.Timestamp ts = new java.sql.Timestamp(tweet.getCreatedAt().getTime());
-
+			incrementVolumeForTime(ts, 1);
+						
+			// insert the tweet into the database
+			_tweetInsertStmt.setLong(1, tweetId); // id
+			_tweetInsertStmt.setString(2, tweet.getText()); // text
+			_tweetInsertStmt.setTimestamp(3, ts, _utcCal); // created_at
+			_tweetInsertStmt.setTimestamp(4, ts, _utcCal); // updated_at
+			_tweetInsertStmt.setString(5, tweet.getUser().getScreenName()); // screenname
+			_tweetInsertStmt.setInt(6, (int)tweet.getUser().getId()); // user_id
+			_tweetInsertStmt.setString(7, "en");
+			_tweetInsertStmt.setString(8, "");
+			_tweetInsertStmt.setInt(9, _categoryId);
+			_tweetInsertStmt.executeUpdate();
+			//_tweetInsertStmt.addBatch();
+			
 			// calculate the volumes for tweets in the last recorded minute
 			if (_lastTimestamp != null)
 			{
@@ -289,7 +304,11 @@ public class Recorder implements StatusListener {
 				{
 					if ((ts.getTime() / 60000) > (_lastTimestamp.getTime() / 60000))
 					{
-						calculateVolumeForTime(_lastTimestamp);
+						// it's a new minute
+						insertVolumeForTime(_lastTimestamp);
+						
+						// insert the tweets from the last minute in a batch
+						//_tweetInsertStmt.executeBatch();
 					}
 					_lastTimestamp = ts;
 				}
@@ -298,20 +317,6 @@ public class Recorder implements StatusListener {
 			{
 				_lastTimestamp = ts;
 			}
-			
-			
-			_tweetInsertStmt.setLong(1, tweetId); // id
-			_tweetInsertStmt.setString(2, tweet.getText()); // text
-			_tweetInsertStmt.setTimestamp(3, ts); // created_at
-			_tweetInsertStmt.setTimestamp(4, ts); // updated_at
-			_tweetInsertStmt.setString(5, tweet.getUser().getScreenName()); // screenname
-			_tweetInsertStmt.setInt(6, (int)tweet.getUser().getId()); // user_id
-			_tweetInsertStmt.setString(7, "en");
-			_tweetInsertStmt.setString(8, "");
-			_tweetInsertStmt.setInt(9, _categoryId);
-			_tweetInsertStmt.executeUpdate();
-			
-			//System.err.println("Tweet insert took: " + (System.currentTimeMillis() - start));
 		}
 		catch(com.mysql.jdbc.exceptions.jdbc4.MySQLIntegrityConstraintViolationException ce)
 		{
@@ -330,97 +335,66 @@ public class Recorder implements StatusListener {
 
 	}
 
-	protected void countTweet(Status tweet)
+	protected long truncateTimestampAsLong(long time)
 	{
-		int currentSec = tweet.getCreatedAt().getSeconds();
-		int secDiff = currentSec - _currentSecond;
-		if (secDiff == 0)
-			_secondsCount[currentSec]++;
-		else
-		{
-			_secondsCount[currentSec] = 1;
-			for(int i = _currentSecond; i < currentSec; i++)
-				_secondsCount[i] = 0;
-		}
-		_currentSecond = currentSec;
+		return (time - (time % 60000));
 	}
 	
-	protected double calculateRate(Date now)
+	protected java.sql.Timestamp truncateTimestamp(java.sql.Timestamp ts)
 	{
-		int currentSec = now.getSeconds() + 60;
-		double total = 0;
-		for(int i = 0; i < 15; i++)
-		{
-			total += _secondsCount[(currentSec - i) % 60];
-		}
+		return new java.sql.Timestamp(truncateTimestampAsLong(ts.getTime()));		
+	}
+	
+	protected void incrementVolumeForTime(java.sql.Timestamp ts, int count)
+	{
+		long startTime = truncateTimestampAsLong(ts.getTime());
+		if (_timestampCount.containsKey(startTime))
+			count += _timestampCount.get(startTime);
 		
-		return (total / 15);
+		_timestampCount.put(startTime, count);
 	}
 	
-	protected void calculateVolumeForTime(java.sql.Timestamp ts)
+	protected void insertVolumeForTime(java.sql.Timestamp ts)
 	{
 		try
 		{
-			// check to see if timestamp is in the hashtable
-			//   - if not
-			//       - check to see if we're at capacity
-			//		 - pop oldest timestamp from queue / remove from hashtable
-			//       - calculate count for pushed timestamp and update database if different from count in hashtable
-			//       - push new timestamp onto queue
-			//		 - calculate count for new timestamp and insert into db
-			//   - if it is, do nothing? (we'll wait until timestamp is popped off to make a final update)
-			
-			// calculate start time and end time for duration
+			// calculate start time for duration
 			//   startTime is the beginning of the minute specified by ts
-			//   endTime is the beginning of the minute following ts
-			java.sql.Timestamp startTime = (java.sql.Timestamp)ts.clone();
-			startTime.setSeconds(0);
-			startTime.setNanos(0);
+			long startTime = truncateTimestampAsLong(ts.getTime());
 			
-			// check to see if start timestamp is in the hashtable
-			
-			if (!_timestampCount.containsKey(startTime))
+			// unlock tables
+			// _unlockTableStmt.execute();
+
+			// check to see if we're at capacity
+			while (_timestampQueue.size() >= TIMESTAMP_BUFFER_SIZE && _timestampQueue.size() > 0)
 			{
-				// unlock tables
-				_unlockTableStmt.execute();
-
-				// check to see if we're at capacity
-				if (_timestampQueue.size() >= TIMESTAMP_BUFFER_SIZE)
-				{
-					// pop oldest timestamp from queue and remove from hashtable
-					java.sql.Timestamp finalTimestamp = _timestampQueue.poll();
-					int lastKnownCount = _timestampCount.remove(finalTimestamp).intValue();
-					
-					// calculate updated count for old timestamp and update db if necessary
-					int newLastCount = getTweetCount(_categoryId, finalTimestamp);
-					
-					if (lastKnownCount != newLastCount)
-					{
-						_volumeUpdateStmt.setInt(1, newLastCount);
-						_volumeUpdateStmt.setTimestamp(2, finalTimestamp);
-						_volumeUpdateStmt.setInt(3, _categoryId);
-						_volumeUpdateStmt.executeUpdate();
-						
-						System.out.println("Volume Updated: " + finalTimestamp.toGMTString() + " " + newLastCount);
-					}
-				}
-								
-				int count = getTweetCount(_categoryId, startTime);
-
-				_timestampQueue.offer(startTime);
-				_timestampCount.put(startTime, new Integer(count));
-
-				// save that volume count back into the database
-				_volumeInsertStmt.setTimestamp(1, startTime);
-				_volumeInsertStmt.setInt(2, count);
-				_volumeInsertStmt.setInt(3, _categoryId);
-				_volumeInsertStmt.executeUpdate();
+				// pop oldest timestamp from queue and remove from hashtable
+				long finalTime = _timestampQueue.poll();
+				java.sql.Timestamp finalTimestamp = new java.sql.Timestamp(finalTime);
+				int count = _timestampCount.remove(finalTime).intValue();
 				
-				System.out.println("Volume Calculated and Stored: " + startTime.toGMTString() + " " + count);	
-				
-				// relock the tweets table
-				_lockTableStmt.execute();
-			}			
+				_volumeUpdateStmt.setInt(1, count);
+				_volumeUpdateStmt.setTimestamp(2, finalTimestamp, _utcCal);
+				_volumeUpdateStmt.setInt(3, _categoryId);
+				_volumeUpdateStmt.executeUpdate();
+					
+				System.out.println("Volume Updated: " + finalTimestamp.toGMTString() + " " + count);
+			}
+
+			_timestampQueue.offer(startTime);
+			int count = _timestampCount.get(startTime);
+			java.sql.Timestamp startTimestamp = new java.sql.Timestamp(startTime);
+
+			// save the volume count into the database
+			_volumeInsertStmt.setTimestamp(1, startTimestamp, _utcCal);
+			_volumeInsertStmt.setInt(2, count);
+			_volumeInsertStmt.setInt(3, _categoryId);
+			_volumeInsertStmt.executeUpdate();
+			
+			System.out.println("Volume Calculated and Stored: " + startTimestamp.toGMTString() + " " + count);	
+			
+			// relock the tweets table
+			// _lockTableStmt.execute();
 		}
 		catch(Exception e)
 		{
@@ -428,7 +402,8 @@ public class Recorder implements StatusListener {
 			e.printStackTrace();
 		}
 	}
-	
+
+	/*
 	protected int getTweetCount(int categoryId, java.sql.Timestamp startTime) throws SQLException
 	{
 		java.sql.Timestamp endTime = new java.sql.Timestamp(startTime.getTime() + 60000);
@@ -455,6 +430,7 @@ public class Recorder implements StatusListener {
 
 		return count;
 	}
+	*/
 	
 	@Override
 	public void onTrackLimitationNotice(int statusesLost) 
@@ -462,19 +438,21 @@ public class Recorder implements StatusListener {
 		try
 		{
 			// unlock tables
-			_unlockTableStmt.execute();
+			// _unlockTableStmt.execute();
 			
 			Timestamp now = getNowUTCTimestamp();
 			_limitInsertStmt.setInt(1, statusesLost);
-			_limitInsertStmt.setTimestamp(2, now);
-			_limitInsertStmt.setTimestamp(3, now);
+			_limitInsertStmt.setTimestamp(2, now, _utcCal);
+			_limitInsertStmt.setTimestamp(3, now, _utcCal);
 			_limitInsertStmt.setInt(3, _categoryId);
 			_limitInsertStmt.executeUpdate();
+			
+			incrementVolumeForTime(now, statusesLost);
 			
 			System.out.println("Rate limited received and stored: " + statusesLost);
 			
 			// relock tweets table
-			_lockTableStmt.execute();
+			// _lockTableStmt.execute();
 		}
 		catch(SQLException e)
 		{
@@ -548,7 +526,8 @@ public class Recorder implements StatusListener {
 								
 				// start twitter recording
 				ConfigurationBuilder cb = new ConfigurationBuilder();
-				cb.setDebugEnabled(true)
+				cb.setDebugEnabled(false)
+				  .setJSONStoreEnabled(true)
 				  .setOAuthConsumerKey(_consumerKey)
 				  .setOAuthConsumerSecret(_consumerSecret)
 				  .setOAuthAccessToken(_accessToken)
@@ -568,7 +547,7 @@ public class Recorder implements StatusListener {
 			_updateRunningStatusStmt.executeUpdate();
 			
 			// lock the tweets table as we start recording
-			_lockTableStmt.execute();
+			// _lockTableStmt.execute();
 		}
 		catch(Exception e)
 		{
@@ -588,13 +567,13 @@ public class Recorder implements StatusListener {
 				_twitterStream = null;
 				
 				if (_lastTimestamp != null)
-					calculateVolumeForTime(_lastTimestamp);
+					insertVolumeForTime(_lastTimestamp);
 				
 				System.out.println("Recorder stopped " + _recorderId);
 			}
 			
 			// unlock tables
-			_unlockTableStmt.execute();
+			// _unlockTableStmt.execute();
 			
 		    // update running status in the database
 			_updateRunningStatusStmt.setString(1, RecorderManager.STOPPED_STATUS);
@@ -616,8 +595,6 @@ public class Recorder implements StatusListener {
 			_getRecorderInfoStmt.close();
 			_tweetInsertStmt.close();
 			_limitInsertStmt.close();
-			_tweetCountAtTimeStmt.close();
-			_rateLimitCountAtTimeStmt.close();
 			_volumeInsertStmt.close();
 			_volumeUpdateStmt.close();
 			_updateRunningStatusStmt.close();
