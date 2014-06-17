@@ -1,5 +1,8 @@
 package com.crowdreplay.recorder;
 
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -23,6 +26,7 @@ import twitter4j.StatusListener;
 import twitter4j.TwitterStream;
 import twitter4j.TwitterStreamFactory;
 import twitter4j.conf.ConfigurationBuilder;
+import twitter4j.json.DataObjectFactory;
 
 public class Recorder implements StatusListener {
 
@@ -73,6 +77,11 @@ public class Recorder implements StatusListener {
 	protected TwitterStream 	_twitterStream;
 	
 	protected Calendar			_utcCal;
+	
+	protected boolean			_DONT_INSERT_TWEETS = false;
+
+	protected String			_RECORD_TO_FILE = null;
+	protected PrintWriter		_recordWriter;
 
 	
 	//*******************************************************************
@@ -138,6 +147,41 @@ public class Recorder implements StatusListener {
 	{
 		return _twitterStream != null;
 	}
+
+	public boolean insertingTweets()
+	{
+		return !_DONT_INSERT_TWEETS;
+	}
+
+	public void setDontInsertTweets(boolean value)
+	{
+		_DONT_INSERT_TWEETS = value;
+	}
+
+	public String getRecordToFile()
+	{
+		return _RECORD_TO_FILE;
+	}
+	
+	public void setRecordToFile(String filename)
+	{
+		_RECORD_TO_FILE = filename;
+		
+		try
+		{
+			if (_recordWriter != null)
+			{
+				_recordWriter.flush();
+				_recordWriter.close();
+			}
+		
+			_recordWriter = new PrintWriter(new FileWriter(_RECORD_TO_FILE + _categoryId));			
+		}
+		catch(IOException e)
+		{
+			e.printStackTrace();
+		}
+	}
 	
 	public int getId()
 	{
@@ -167,7 +211,7 @@ public class Recorder implements StatusListener {
 	public java.sql.Timestamp getNowUTCTimestamp()
 	{
 		java.util.Date date = new java.util.Date(); // now
-		return new java.sql.Timestamp(date.getTime() + date.getTimezoneOffset()*60*1000);
+		return new java.sql.Timestamp(date.getTime());
 	}
 
 	public java.sql.Timestamp getNowTimestamp()
@@ -185,6 +229,11 @@ public class Recorder implements StatusListener {
 			_tweetInsertStmt = _dbConnection.prepareStatement("insert into " + _tableName + " (id, text, created_at, updated_at, screenname, user_id, lang, json, tweet_category_id) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? );");
 			_createNewTableStmt = _dbConnection.prepareStatement("create table " + _tableName + " like tweets;");
 			_lockTableStmt = _dbConnection.prepareStatement("lock tables " + _tableName + " write;");
+			
+			if (_RECORD_TO_FILE != null)
+			{
+				_recordWriter = new PrintWriter(new FileWriter(_RECORD_TO_FILE + _categoryId));
+			}
 		}
 		catch(Exception e)
 		{
@@ -283,19 +332,27 @@ public class Recorder implements StatusListener {
 			// parse the created at time				
 			java.sql.Timestamp ts = new java.sql.Timestamp(tweet.getCreatedAt().getTime());
 			incrementVolumeForTime(ts, 1);
-						
-			// insert the tweet into the database
-			_tweetInsertStmt.setLong(1, tweetId); // id
-			_tweetInsertStmt.setString(2, tweet.getText()); // text
-			_tweetInsertStmt.setTimestamp(3, ts, _utcCal); // created_at
-			_tweetInsertStmt.setTimestamp(4, ts, _utcCal); // updated_at
-			_tweetInsertStmt.setString(5, tweet.getUser().getScreenName()); // screenname
-			_tweetInsertStmt.setInt(6, (int)tweet.getUser().getId()); // user_id
-			_tweetInsertStmt.setString(7, "en");
-			_tweetInsertStmt.setString(8, "");
-			_tweetInsertStmt.setInt(9, _categoryId);
-			_tweetInsertStmt.executeUpdate();
-			//_tweetInsertStmt.addBatch();
+				
+			if (!_DONT_INSERT_TWEETS)
+			{
+				// insert the tweet into the database
+				_tweetInsertStmt.setLong(1, tweetId); // id
+				_tweetInsertStmt.setString(2, tweet.getText()); // text
+				_tweetInsertStmt.setTimestamp(3, ts, _utcCal); // created_at
+				_tweetInsertStmt.setTimestamp(4, ts, _utcCal); // updated_at
+				_tweetInsertStmt.setString(5, tweet.getUser().getScreenName()); // screenname
+				_tweetInsertStmt.setInt(6, (int)tweet.getUser().getId()); // user_id
+				_tweetInsertStmt.setString(7, "en");
+				_tweetInsertStmt.setString(8, "");
+				_tweetInsertStmt.setInt(9, _categoryId);
+				_tweetInsertStmt.executeUpdate();
+				//_tweetInsertStmt.addBatch();
+			}
+			
+			if (_recordWriter != null)
+			{
+				_recordWriter.println(DataObjectFactory.getRawJSON(tweet));
+			}
 			
 			// calculate the volumes for tweets in the last recorded minute
 			if (_lastTimestamp != null)
@@ -444,7 +501,7 @@ public class Recorder implements StatusListener {
 			_limitInsertStmt.setInt(1, statusesLost);
 			_limitInsertStmt.setTimestamp(2, now, _utcCal);
 			_limitInsertStmt.setTimestamp(3, now, _utcCal);
-			_limitInsertStmt.setInt(3, _categoryId);
+			_limitInsertStmt.setInt(4, _categoryId);
 			_limitInsertStmt.executeUpdate();
 			
 			incrementVolumeForTime(now, statusesLost);
@@ -601,6 +658,12 @@ public class Recorder implements StatusListener {
 			_createNewTableStmt.close();
 			
 			_dbConnection.close();
+			
+			if (_recordWriter != null)
+			{
+				_recordWriter.flush();
+				_recordWriter.close();
+			}
 		}
 		catch(Exception e)
 		{
