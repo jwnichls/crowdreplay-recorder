@@ -17,6 +17,8 @@ public class TwitterRecorderDaemon implements Daemon {
 	public static final String DB_PASSWORD_PROP 	= "dbPassword";
 	public static final String CONSUMER_KEY_PROP 	= "consumerKey";
 	public static final String CONSUMER_SECRET_PROP = "consumerSecret";
+	public static final String DONT_INSERT_TWEETS_PROP = "dontInsert";
+	public static final String RECORD_TO_FILE_NAME	= "recordToFile";
 	
 	
 	//*******************************************************************
@@ -54,6 +56,16 @@ public class TwitterRecorderDaemon implements Daemon {
 		// Here open configuration files, create a trace file, create ServerSockets, Threads
 		_twitterRecorderManager = new RecorderManager(_dbName, _dbUser, _dbPassword, _consumerKey, _consumerSecret);
 		_managerThread = new Thread(_twitterRecorderManager);
+	}
+	
+	public void setDontInsertTweets(boolean value)
+	{
+		_twitterRecorderManager.setDontInsertTweets(value);
+	}
+	
+	public void setRecordToFileName(String filename)
+	{
+		_twitterRecorderManager.setRecordToFileName(filename);
 	}
 	
 	@Override
@@ -98,9 +110,22 @@ public class TwitterRecorderDaemon implements Daemon {
 			String dbPassword = prop.getProperty(DB_PASSWORD_PROP);
 			String consumerKey = prop.getProperty(CONSUMER_KEY_PROP);
 			String consumerSecret = prop.getProperty(CONSUMER_SECRET_PROP);
+			String dontInsert = prop.getProperty(DONT_INSERT_TWEETS_PROP);
+			String recordToFileName = prop.getProperty(RECORD_TO_FILE_NAME);
 			
 			TwitterRecorderDaemon daemon = new TwitterRecorderDaemon(dbName, dbUser, dbPassword, consumerKey, consumerSecret);
 			daemon.init(null);
+
+			if (dontInsert != null)
+			{
+				daemon.setDontInsertTweets(Boolean.parseBoolean(dontInsert));
+			}
+
+			if (recordToFileName != null)
+			{
+				daemon.setRecordToFileName(recordToFileName);
+			}
+			
 			daemon.start();
 		}
 		catch(Exception e)

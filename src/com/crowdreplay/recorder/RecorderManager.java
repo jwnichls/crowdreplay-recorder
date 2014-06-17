@@ -36,6 +36,9 @@ public class RecorderManager implements Runnable
 	protected Connection		  	_dbConnection;
 	protected PreparedStatement		_queryRecordersStmt;
 	
+	protected boolean				_dontInsertTweets = false;
+	protected String				_recordFileName = null;
+	
 
 	//*******************************************************************
 	// Constructor
@@ -161,11 +164,32 @@ public class RecorderManager implements Runnable
 	protected Recorder createRecorder(int id, String consumerKey, String consumerSecret) throws SQLException
 	{
 		Connection recorderDBConnection = createDBConnection();
-		return new Recorder(recorderDBConnection, id, consumerKey, consumerSecret);
+		Recorder r = new Recorder(recorderDBConnection, id, consumerKey, consumerSecret);
+		r.setDontInsertTweets(_dontInsertTweets);
+		if (_recordFileName != null)
+			r.setRecordToFile(_recordFileName);
+		
+		return r;
 	}
 	
 	protected Connection createDBConnection() throws SQLException
 	{
 		return DriverManager.getConnection(_dbName, _dbUser, _dbPassword);
+	}
+
+	public void setDontInsertTweets(boolean value) 
+	{
+		_dontInsertTweets = value;
+		
+		Iterator<Recorder> recIterator = _recorders.values().iterator();
+		while(recIterator.hasNext())
+		{
+			recIterator.next().setDontInsertTweets(_dontInsertTweets);
+		}
+	}
+	
+	public void setRecordToFileName(String filename)
+	{
+		_recordFileName = filename;
 	}
 }
