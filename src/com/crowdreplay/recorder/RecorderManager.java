@@ -54,16 +54,6 @@ public class RecorderManager implements Runnable
 		_twitterConsumerSecret = twitterConsumerSecret;
 		
 		_recorders = new HashMap<Integer, Recorder>();
-		
-		try
-		{
-			_dbConnection = createDBConnection();
-			_queryRecordersStmt = _dbConnection.prepareStatement("select * from recorders;");
-		}
-		catch(Exception e)
-		{
-			e.printStackTrace();
-		}
 	}
 
 	@Override
@@ -73,6 +63,15 @@ public class RecorderManager implements Runnable
 		ResultSet rsRecorders = null;
 		ArrayList<Recorder> currentRecorders = new ArrayList<Recorder>();
 		
+		try
+		{
+			_dbConnection = createDBConnection();
+		}
+		catch(Exception e)
+		{
+			e.printStackTrace();
+		}
+		
 		while(_running && _dbConnection != null)
 		{
 			currentRecorders.clear();
@@ -80,7 +79,7 @@ public class RecorderManager implements Runnable
 			try
 			{
 				if (_dbConnection.isClosed())
-					break;
+					_dbConnection = createDBConnection();
 				
 				rsRecorders = _queryRecordersStmt.executeQuery();
 				
@@ -174,7 +173,10 @@ public class RecorderManager implements Runnable
 	
 	protected Connection createDBConnection() throws SQLException
 	{
-		return DriverManager.getConnection(_dbName, _dbUser, _dbPassword);
+		Connection conn = DriverManager.getConnection(_dbName, _dbUser, _dbPassword);
+		_queryRecordersStmt = conn.prepareStatement("select * from recorders;");
+		
+		return conn;
 	}
 
 	public void setDontInsertTweets(boolean value) 
